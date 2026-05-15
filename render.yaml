@@ -1,0 +1,10 @@
+# Configuración de Render.com para Chavo Bot
+services:
+  - type: worker
+    name: chavo-bot
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    envVars:
+      - key: BOT_TOKEN
+        sync: false   # Se configura manualmente en el dashboard de Render
