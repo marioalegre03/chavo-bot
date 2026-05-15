@@ -1,20 +1,11 @@
-# Configuración de Fly.io para Chavo Bot
-app = "chavo-bot"
-primary_region = "mia"
+# Chavo Bot — Fly.io config
+# Bot de Telegram con polling: NO necesita puerto HTTP expuesto
+app            = "chavo-bot"
+primary_region = "dfw"   # Dallas — más cercano a México
 
 [build]
 
-[env]
-  # BOT_TOKEN se configura como secret:
-  # fly secrets set BOT_TOKEN=tu_token_aqui
-
-[[services]]
-  # El bot de Telegram no necesita puerto HTTP público
-  # Solo necesita salida a internet para el polling
-  internal_port = 8080
-  protocol      = "tcp"
-
-  [[services.tcp_checks]]
-    interval    = "15s"
-    timeout     = "2s"
-    grace_period = "5s"
+# Sin [[services]] ni [[http_service]]
+# El bot solo hace polling saliente a la API de Telegram
+# El secret BOT_TOKEN se configura con:
+#   fly secrets set BOT_TOKEN=tu_token
