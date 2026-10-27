@@ -33,6 +33,9 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
+# httpx/httpcore loguean la URL completa (incluye el token del bot): silenciarlos
+for _n in ("httpx", "httpcore"):
+    logging.getLogger(_n).setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────
