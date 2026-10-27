@@ -12,8 +12,8 @@ from telegram import (
     Update,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
-    InputMediaPhoto,
 )
+from telegram.error import BadRequest
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -43,12 +43,8 @@ ELEGIR_VERSION, EN_TRIVIA = range(2)
 # ─────────────────────────────────────────────
 #  IMÁGENES (URLs públicas)
 # ─────────────────────────────────────────────
-IMAGENES = {
-    "bienvenida": "https://upload.wikimedia.org/wikipedia/commons/thumb/4/4e/El_chavo_del_ocho_title_card.jpg/640px-El_chavo_del_ocho_title_card.jpg",
-    "original":   "https://upload.wikimedia.org/wikipedia/commons/thumb/4/4e/El_chavo_del_ocho_title_card.jpg/640px-El_chavo_del_ocho_title_card.jpg",
-    "animado":    "https://upload.wikimedia.org/wikipedia/en/thumb/7/71/ElChavoAnimado.jpg/220px-ElChavoAnimado.jpg",
-    "fin":        "https://upload.wikimedia.org/wikipedia/commons/thumb/4/4e/El_chavo_del_ocho_title_card.jpg/640px-El_chavo_del_ocho_title_card.jpg",
-}
+# Las URLs de imagen anteriores (Wikimedia) ya no existen: Telegram devolvia
+# BadRequest en /start. El bot funciona ahora solo con texto.
 
 # ─────────────────────────────────────────────
 #  BANCO DE PREGUNTAS
@@ -248,6 +244,8 @@ KEY_INDICE    = "indice"
 KEY_PUNTAJE   = "puntaje"
 KEY_TOTAL     = "total"
 NUM_PREGUNTAS = 10
+KEY_RESPONDIDA = "respondida"
+KEY_FINALIZADA = "finalizada"
 
 # ─────────────────────────────────────────────
 #  HANDLERS
@@ -261,9 +259,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         ],
         [InlineKeyboardButton("📊 Mi historial", callback_data="puntaje_historico")],
     ]
-    await update.message.reply_photo(
-        photo=IMAGENES["bienvenida"],
-        caption=(
+    await update.message.reply_text(
+        text=(
             "🎪 *¡Bienvenido al CHAVO BOT!* 🛢️\n\n"
             "🧡 El bot de trivia oficial de *El Chavo del Ocho*\n\n"
             "¿De qué versión quieres jugar? 👇"
@@ -286,7 +283,13 @@ async def elegir_version(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             lineas  = [f"• {v['version']}: {v['puntaje']}/{v['total']}" for v in historico[-5:]]
             promedio = sum(v["puntaje"]/v["total"]*100 for v in historico) / len(historico)
             texto   = f"📊 *Últimas partidas:*\n\n" + "\n".join(lineas) + f"\n\n📈 Promedio: {promedio:.0f}%"
-        await query.edit_message_caption(caption=texto, parse_mode="Markdown")
+        await query.edit_message_text(
+            text=texto,
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton("🔄 Jugar", callback_data="jugar_nuevo")]]
+            ),
+        )
         return ELEGIR_VERSION
 
     version = query.data
@@ -295,29 +298,27 @@ async def elegir_version(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if version == "original":
         pool  = PREGUNTAS_ORIGINAL.copy()
         titulo = "📺 *Versión Original (1971-1992)*"
-        foto   = IMAGENES["original"]
         desc   = "Preguntas sobre la serie clásica con Chespirito y el elenco original."
     else:
         pool  = PREGUNTAS_ANIMADO.copy()
         titulo = "🎨 *Versión Animada (2006-2014)*"
-        foto   = IMAGENES["animado"]
         desc   = "Preguntas sobre la querida serie animada."
 
     random.shuffle(pool)
-    context.user_data[KEY_PREGUNTAS] = pool[:NUM_PREGUNTAS]
-    context.user_data[KEY_INDICE]    = 0
-    context.user_data[KEY_PUNTAJE]   = 0
-    context.user_data[KEY_TOTAL]     = NUM_PREGUNTAS
+    seleccion = pool[:NUM_PREGUNTAS]
+    context.user_data[KEY_PREGUNTAS]  = seleccion
+    context.user_data[KEY_INDICE]     = 0
+    context.user_data[KEY_PUNTAJE]    = 0
+    context.user_data[KEY_TOTAL]      = len(seleccion)
+    context.user_data.pop(KEY_RESPONDIDA, None)
+    context.user_data[KEY_FINALIZADA] = False
 
-    await query.edit_message_media(
-        media=InputMediaPhoto(
-            media=foto,
-            caption=(
-                f"{titulo}\n\n_{desc}_\n\n"
-                f"📋 *{NUM_PREGUNTAS} preguntas* aleatorias. ¡Suerte! 🧠"
-            ),
-            parse_mode="Markdown",
-        )
+    await query.edit_message_text(
+        text=(
+            f"{titulo}\n\n_{desc}_\n\n"
+            f"📋 *{NUM_PREGUNTAS} preguntas* aleatorias. ¡Suerte! 🧠"
+        ),
+        parse_mode="Markdown",
     )
     await enviar_pregunta(update, context)
     return EN_TRIVIA
@@ -333,6 +334,7 @@ async def enviar_pregunta(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await mostrar_resultado_final(update, context)
         return
 
+    context.user_data[KEY_RESPONDIDA] = False
     pregunta = preguntas[indice]
     letras   = ["🅰️", "🅱️", "🇨", "🇩"]
     teclado  = [
@@ -363,7 +365,15 @@ async def responder_pregunta(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
         return ConversationHandler.END
 
+    if KEY_PREGUNTAS not in context.user_data:
+        await query.edit_message_text("⌛ Esta partida ya no está activa. Usa /start para jugar.")
+        return ConversationHandler.END
+
     indice   = context.user_data[KEY_INDICE]
+    # Evita contar dos veces un doble toque sobre la misma pregunta
+    if context.user_data.get(KEY_RESPONDIDA) or indice >= context.user_data[KEY_TOTAL]:
+        return EN_TRIVIA
+    context.user_data[KEY_RESPONDIDA] = True
     pregunta = context.user_data[KEY_PREGUNTAS][indice]
     puntaje  = context.user_data[KEY_PUNTAJE]
     resp     = int(query.data)
@@ -390,12 +400,22 @@ async def responder_pregunta(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def siguiente_pregunta(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    await query.delete_message()
+    if KEY_PREGUNTAS not in context.user_data:
+        await query.edit_message_text("⌛ Esta partida ya no está activa. Usa /start para jugar.")
+        return ConversationHandler.END
+    try:
+        await query.delete_message()
+    except BadRequest:
+        pass
     await enviar_pregunta(update, context)
     return EN_TRIVIA
 
 
 async def mostrar_resultado_final(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Un "Siguiente" repetido no debe duplicar el resultado ni el historial
+    if context.user_data.get(KEY_FINALIZADA):
+        return
+    context.user_data[KEY_FINALIZADA] = True
     puntaje = context.user_data[KEY_PUNTAJE]
     total   = context.user_data[KEY_TOTAL]
     version = context.user_data.get(KEY_VERSION, "original")
@@ -415,10 +435,9 @@ async def mostrar_resultado_final(update: Update, context: ContextTypes.DEFAULT_
         [InlineKeyboardButton("🔄 Jugar de nuevo", callback_data="jugar_nuevo")],
         [InlineKeyboardButton("📊 Ver historial",  callback_data="ver_historial")],
     ]
-    await context.bot.send_photo(
+    await context.bot.send_message(
         chat_id=update.effective_chat.id,
-        photo=IMAGENES["fin"],
-        caption=(
+        text=(
             f"🎊 *¡Juego terminado!* 🎊\n\n"
             f"📊 *Resultado:* {puntaje}/{total} correctas\n"
             f"📈 *Porcentaje:* {pct:.0f}%\n\n"
@@ -438,8 +457,8 @@ async def jugar_nuevo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
             InlineKeyboardButton("🎨 Animado (2006)",  callback_data="animado"),
         ],
     ]
-    await query.edit_message_caption(
-        caption="🎪 *¡Otra partida!*\n\n¿Qué versión eliges esta vez? 👇",
+    await query.edit_message_text(
+        text="🎪 *¡Otra partida!*\n\n¿Qué versión eliges esta vez? 👇",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
@@ -457,8 +476,8 @@ async def ver_historial(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         promedio = sum(v["puntaje"]/v["total"]*100 for v in historico) / len(historico)
         texto    = "📊 *Últimas partidas:*\n\n" + "\n".join(lineas) + f"\n\n📈 Promedio: {promedio:.0f}%"
     keyboard = [[InlineKeyboardButton("🔄 Jugar de nuevo", callback_data="jugar_nuevo")]]
-    await query.edit_message_caption(
-        caption=texto,
+    await query.edit_message_text(
+        text=texto,
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
@@ -478,6 +497,16 @@ async def ayuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ─────────────────────────────────────────────
 #  MAIN
 # ─────────────────────────────────────────────
+
+async def callback_huerfano(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Botones viejos (p. ej. tras reiniciar el bot): avisa en vez de dejar el spinner."""
+    query = update.callback_query
+    await query.answer("Esta partida ya no está activa. Usa /start", show_alert=True)
+
+
+async def manejar_error(update: object, context: ContextTypes.DEFAULT_TYPE):
+    logger.error("Error no controlado", exc_info=context.error)
+
 
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
@@ -504,6 +533,8 @@ def main():
 
     app.add_handler(conv)
     app.add_handler(CommandHandler("ayuda", ayuda))
+    app.add_handler(CallbackQueryHandler(callback_huerfano))
+    app.add_error_handler(manejar_error)
 
     logger.info("🎪 Chavo Bot iniciado... ¡Fue sin querer queriendo! 🛢️")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
